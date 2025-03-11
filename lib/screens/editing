@@ -1,0 +1,301 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+class DeliveryScreen extends StatefulWidget {
+  final String orderId;
+
+  const DeliveryScreen({
+    Key? key,
+    required this.orderId,
+  }) : super(key: key);
+
+  @override
+  State<DeliveryScreen> createState() => _DeliveryScreenState();
+}
+
+class _DeliveryScreenState extends State<DeliveryScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseMessaging _messaging = FirebaseMessaging.instance;
+  
+  GoogleMapController? _mapController;
+  StreamSubscription<Position>? _locationSubscription;
+  Position? _currentPosition;
+  final Set<Marker> _markers = {};
+  bool _isLocationEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _startLocationService();
+  }
+
+  Future<void> _startLocationService() async {
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always) {
+        _isLocationEnabled = true;
+        
+        // Configure location settings for high accuracy
+        const locationSettings = LocationSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 1, // Update every meter
+          timeLimit: null,
+        );
+
+        // Start location updates
+        _locationSubscription?.cancel();
+        _locationSubscription = Geolocator.getPositionStream(
+          locationSettings: locationSettings,
+        ).listen(
+          (Position? position) async {
+            if (position != null) {
+              setState(() {
+                _currentPosition = position;
+                _markers.clear();
+                _markers.add(
+                  Marker(
+                    markerId: const MarkerId('delivery_location'),
+                    position: LatLng(position.latitude, position.longitude),
+                    infoWindow: const InfoWindow(title: 'Your Location'),
+                  ),
+                );
+              });
+
+              // Update map camera
+              _mapController?.animateCamera(
+                CameraUpdate.newLatLng(
+                  LatLng(position.latitude, position.longitude),
+                ),
+              );
+
+              // Get customer's FCM token
+              final orderDoc = await _firestore
+                  .collection('orders')
+                  .doc(widget.orderId)
+                  .get();
+              
+              if (orderDoc.exists) {
+                final userId = orderDoc.data()?['userId'];
+                if (userId != null) {
+                  final userDoc = await _firestore
+                      .collection('users')
+                      .doc(userId)
+                      .get();
+                  
+                  final customerToken = userDoc.data()?['fcmToken'];
+
+                  // Update location in Firestore
+                  WriteBatch batch = _firestore.batch();
+
+                  final mainOrderRef = _firestore
+                      .collection('orders')
+                      .doc(widget.orderId);
+                  final subOrderRef = mainOrderRef
+                      .collection('orders')
+                      .doc(widget.orderId);
+                  final userOrderRef = _firestore
+                      .collection('users')
+                      .doc(userId)
+                      .collection('orders')
+                      .doc(widget.orderId);
+
+                  final locationUpdate = {
+                    'deliveryLocation': GeoPoint(
+                      position.latitude,
+                      position.longitude,
+                    ),
+                    'timestamp': FieldValue.serverTimestamp(),
+                    'lastUpdate': DateTime.now().millisecondsSinceEpoch,
+                    'deliveryStatus': 'in_progress',
+                    'deliveryPersonId': _auth.currentUser?.uid,
+                  };
+
+                  batch.set(mainOrderRef, locationUpdate, SetOptions(merge: true));
+                  batch.set(subOrderRef, locationUpdate, SetOptions(merge: true));
+                  batch.set(userOrderRef, locationUpdate, SetOptions(merge: true));
+
+                  await batch.commit();
+
+                  // Send FCM notification if we have customer's token
+                  if (customerToken != null) {
+                    await _sendLocationUpdateNotification(
+                      customerToken,
+                      position.latitude,
+                      position.longitude,
+                    );
+                  }
+                }
+              }
+            }
+          },
+          onError: (error) {
+            print('Location stream error: $error');
+            _isLocationEnabled = false;
+            // Try to restart tracking after error
+            Future.delayed(
+              const Duration(seconds: 2),
+              _startLocationService,
+            );
+          },
+          cancelOnError: false,
+        );
+      }
+    } catch (e) {
+      print('Error starting location service: $e');
+      _isLocationEnabled = false;
+      Future.delayed(
+        const Duration(seconds: 2),
+        _startLocationService,
+      );
+    }
+  }
+
+  Future<void> _sendLocationUpdateNotification(
+    String customerToken,
+    double latitude,
+    double longitude,
+  ) async {
+    try {
+      // This would typically be done through a server
+      // For testing, you can use Firebase Cloud Functions
+      await _firestore.collection('notifications').add({
+        'token': customerToken,
+        'data': {
+          'orderId': widget.orderId,
+          'latitude': latitude.toString(),
+          'longitude': longitude.toString(),
+          'type': 'location_update',
+        },
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      print('Error sending notification: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _locationSubscription?.cancel();
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Delivery Navigation'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _startLocationService,
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: _currentPosition != null
+                  ? LatLng(
+                      _currentPosition!.latitude,
+                      _currentPosition!.longitude,
+                    )
+                  : const LatLng(0, 0),
+              zoom: 15,
+            ),
+            markers: _markers,
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
+            onMapCreated: (controller) {
+              _mapController = controller;
+            },
+          ),
+          if (!_isLocationEnabled)
+            Container(
+              color: Colors.black54,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Location services are disabled',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    ElevatedButton(
+                      onPressed: _startLocationService,
+                      child: const Text('Enable Location'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+      bottomNavigationBar: BottomAppBar(
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              ElevatedButton(
+                onPressed: () async {
+                  // Mark order as completed
+                  try {
+                    await _firestore
+                        .collection('orders')
+                        .doc(widget.orderId)
+                        .update({
+                      'status': 'completed',
+                      'completedAt': FieldValue.serverTimestamp(),
+                    });
+                    if (mounted) {
+                      Navigator.pop(context);
+                    }
+                  } catch (e) {
+                    print('Error completing order: $e');
+                  }
+                },
+                child: const Text('Complete Delivery'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                ),
+                onPressed: () async {
+                  // Mark order as cancelled
+                  try {
+                    await _firestore
+                        .collection('orders')
+                        .doc(widget.orderId)
+                        .update({
+                      'status': 'cancelled',
+                      'cancelledAt': FieldValue.serverTimestamp(),
+                    });
+                    if (mounted) {
+                      Navigator.pop(context);
+                    }
+                  } catch (e) {
+                    print('Error cancelling order: $e');
+                  }
+                },
+                child: const Text('Cancel Delivery'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

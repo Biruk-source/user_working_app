@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "973044924282",
+    "project_id": "gbwork-852ce",
+    "storage_bucket": "gbwork-852ce.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:973044924282:android:311efffa64f688dc4fa0c3",
+        "android_client_info": {
+          "package_name": "com.gb.work"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "973044924282-trenp36gp56574f1r9f0v8ikt2qltup8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDQOsgFTJlIyRU6kLKUWBsiyeIhVVNVAQ0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "973044924282-trenp36gp56574f1r9f0v8ikt2qltup8.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
